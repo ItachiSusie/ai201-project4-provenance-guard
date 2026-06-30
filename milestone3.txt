@@ -1,0 +1,133 @@
+Milestone 3 Plan: Submission endpoint + first detection signal
+
+Source references:
+- planning.md Architecture Diagram: submission flow starts at POST /submit, receives JSON text + creator_id, then later passes text to Signal 1 Groq LLM and Signal 2 Stylometry.
+- planning.md Detection Signals: Signal 1 is Groq LLM and must return structured JSON with ai_likelihood in 0-1 plus a one-sentence rationale.
+- planning.md API Surface: POST /submit accepts {"text": "...", "creator_id": "..."} and eventually returns content_id, attribution, confidence, label, reason, and timestamp.
+
+Files and directories to create or update:
+- Create app.py: main Flask app with POST /submit and GET /log.
+- Create signals.py: first detection signal function, groq_signal(text).
+- Create data/: directory for structured project data that should persist locally.
+- Create data/audit_log.json: JSON audit log storing submission entries.
+- Update requirements.txt if Flask, groq, or python-dotenv are missing.
+
+1. Prompt an AI tool before coding
+   Give the AI tool the architecture diagram and the Signal 1 section from planning.md. Ask it to generate only:
+   - A Flask app skeleton with a POST /submit route stub, and optionally GET /log if it keeps the structure aligned with the spec.
+   - A groq_signal(text) function that calls Groq with model llama-3.3-70b-versatile, temperature=0, retries up to 3 times, and returns {"ai_likelihood": float, "rationale": str}.
+
+   Prompt draft:
+   """
+   Build a Flask backend skeleton for Provenance Guard using this architecture and signal spec.
+
+   Architecture:
+   [paste planning.md Architecture Diagram]
+
+   Detection Signal 1:
+   [paste planning.md Signal 1 - Groq LLM section]
+
+   Generate:
+   1. A Flask app skeleton with POST /submit that accepts JSON containing at minimum text and creator_id. For now, the route should return a hardcoded response matching the API contract shape.
+   2. A groq_signal(text) function that sends text to Groq and prompts the model to return structured JSON exactly like {"ai_likelihood": <0-1>, "rationale": "<one sentence>"}.
+
+   Keep groq_signal independent from the route so it can be tested directly before being wired into POST /submit.
+   """
+
+2. Review the AI output before using it
+   Check these items before copying or adapting code:
+   - groq_signal signature is groq_signal(text), with no Flask request dependency.
+   - groq_signal returns a dict/object with ai_likelihood as a numeric 0-1 score and rationale as text, not a string label like "AI" or "human".
+   - The Groq prompt requires structured JSON and explains that 0 means clearly human and 1 means clearly AI.
+   - The Flask POST /submit route reads request.get_json(), validates text and creator_id, and returns JSON.
+   - The hardcoded POST /submit response uses the API contract keys: content_id, attribution, confidence, label, reason, timestamp.
+   - No API key is hardcoded; use an environment variable such as GROQ_API_KEY.
+
+3. Set up the Flask app skeleton
+   - Confirm requirements.txt includes Flask and the Groq client dependency, or add them if missing.
+   - Create the main Flask application file following the repo's current structure.
+   - Implement POST /submit with input validation for missing JSON, missing text, and missing creator_id.
+   - Return a hardcoded success response first, for example attribution="uncertain", confidence=0.50, and a placeholder reason.
+   - Run the app locally and verify POST /submit with curl using a JSON body containing text and creator_id.
+
+4. Implement the first detection signal independently
+   - Add groq_signal(text) in a separate helper/module or clearly separated function.
+   - Build a deterministic Groq request using llama-3.3-70b-versatile and temperature=0.
+   - Prompt the model to return only JSON with ai_likelihood and rationale.
+   - Parse the JSON safely and validate ai_likelihood is numeric and within 0-1.
+   - Retry transient failures up to 3 times.
+   - Return the parsed result as {"ai_likelihood": float, "rationale": str}.
+
+5. Test groq_signal before wiring it into /submit
+   Call groq_signal directly with 3-4 sample texts:
+   - A short casual human-like note.
+   - A polished generic AI-like paragraph.
+   - A formal human-style paragraph that could be a false-positive risk.
+   - A very short input to observe behavior.
+
+   Inspect the raw outputs and confirm:
+   - ai_likelihood is always a 0-1 score.
+   - rationale is one sentence.
+   - the function does not return an attribution label.
+   - API failures surface clearly instead of silently pretending success.
+
+6. Wire Signal 1 into POST /submit after direct testing passes
+   - Call groq_signal(text) from POST /submit.
+   - Convert the returned ai_likelihood score into a simple attribution result for now:
+     - ai_likelihood >= 0.75 -> "likely_ai"
+     - ai_likelihood >= 0.40 -> "uncertain"
+     - ai_likelihood < 0.40 -> "likely_human"
+   - Generate a unique content_id for every submission with uuid.uuid4().
+   - Return a JSON response with at least:
+     - content_id
+     - attribution
+     - confidence placeholder, for example 0.50 until Milestone 4 scoring is implemented
+     - label placeholder, for example "Preliminary provenance label based on Signal 1"
+     - timestamp
+   - Keep stylometry, final weighted scoring, appeals, and production auth out of Milestone 3 unless explicitly required.
+
+7. Set up the structured audit log
+   - Add helper functions in app.py or a small log helper module:
+     - append_log(entry): appends a structured dict to data/audit_log.json.
+     - get_log(limit=None): reads entries from data/audit_log.json and returns most recent entries first.
+   - Every successful POST /submit call must write an audit entry with:
+     - content_id
+     - creator_id
+     - timestamp
+     - attribution
+     - confidence
+     - llm_score
+     - status="classified"
+   - Use JSON or SQLite only; do not rely on print() statements as the audit log.
+   - Start simple with JSON for Milestone 3, because it is easy to inspect and show in README screenshots.
+
+8. Add GET /log endpoint
+   - Implement GET /log in app.py.
+   - Return jsonify({"entries": get_log()}).
+   - The endpoint is intentionally unauthenticated for this class project so the README and grader can inspect the audit log.
+   - Confirm the log can show at least 3 structured submission entries.
+
+9. Required curl verification
+   - Run a direct groq_signal smoke test.
+   - Run the Flask server.
+   - Send this POST /submit curl request with text and creator_id:
+
+     curl -s -X POST http://localhost:5000/submit \
+       -H "Content-Type: application/json" \
+       -d '{"text": "The sun dipped below the horizon, painting the sky in hues of amber and rose. I sat on the porch, coffee in hand, watching the neighborhood slowly go quiet.", "creator_id": "test-user-1"}' | python -m json.tool
+
+   - Confirm the response is JSON and contains the expected API contract fields.
+   - Save the returned content_id for Milestone 5 appeal testing.
+   - Confirm invalid requests without text or creator_id return a clear error response.
+   - Submit at least 3 test requests so the audit log has at least 3 entries.
+   - Call GET /log and confirm those entries are returned:
+
+     curl -s http://localhost:5000/log | python -m json.tool
+
+10. Milestone 3 checkpoint
+   - Flask app runs locally.
+   - POST /submit accepts JSON with text and creator_id.
+   - POST /submit returns content_id, attribution, confidence placeholder, and label placeholder.
+   - content_id appears in both the response and the audit log.
+   - Each submission writes a structured JSON audit entry with timestamp, content_id, attribution, and llm_score.
+   - GET /log returns the most recent audit log entries as JSON.
