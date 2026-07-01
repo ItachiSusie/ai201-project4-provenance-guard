@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import statistics
 import time
 
 from dotenv import load_dotenv
@@ -12,6 +14,83 @@ MAX_RETRIES = 3
 
 class SignalError(RuntimeError):
     pass
+
+
+def clamp(value, min_value=0.0, max_value=1.0):
+    return max(min_value, min(max_value, value))
+
+
+def tokenize_words(text):
+    return re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", text.lower())
+
+
+def split_sentences(text):
+    sentences = [sentence.strip() for sentence in re.split(r"[.!?]+", text) if sentence.strip()]
+    return sentences or [text.strip()]
+
+
+def sentence_word_counts(text):
+    return [len(tokenize_words(sentence)) for sentence in split_sentences(text)]
+
+
+def stylo_signal(text):
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("text must be a non-empty string")
+
+    words = tokenize_words(text)
+    if not words:
+        raise ValueError("text must contain at least one word")
+
+    word_count = len(words)
+    type_token_ratio = len(set(words)) / word_count
+    counts = [count for count in sentence_word_counts(text) if count > 0]
+    sentence_length_std = statistics.pstdev(counts) if len(counts) > 1 else 0.0
+    avg_word_length = sum(len(word) for word in words) / word_count
+
+    ttr_ai = clamp((0.70 - type_token_ratio) / (0.70 - 0.45))
+    var_ai = clamp((6 - sentence_length_std) / (6 - 2))
+    len_ai = clamp((avg_word_length - 4.0) / (5.5 - 4.0))
+    ai_likelihood = (ttr_ai + var_ai + len_ai) / 3
+
+    metrics = {
+        "word_count": word_count,
+        "type_token_ratio": round(type_token_ratio, 3),
+        "sentence_length_std": round(sentence_length_std, 3),
+        "avg_word_length": round(avg_word_length, 3),
+        "ttr_ai": round(ttr_ai, 3),
+        "var_ai": round(var_ai, 3),
+        "len_ai": round(len_ai, 3),
+    }
+
+    return {
+        "ai_likelihood": round(ai_likelihood, 3),
+        "reliable": word_count >= 25,
+        "metrics": metrics,
+        "rationale": _stylometry_rationale(metrics),
+    }
+
+
+def _stylometry_rationale(metrics):
+    findings = []
+    if metrics["ttr_ai"] >= 0.6:
+        findings.append("low vocabulary diversity")
+    elif metrics["ttr_ai"] <= 0.3:
+        findings.append("high vocabulary diversity")
+
+    if metrics["var_ai"] >= 0.6:
+        findings.append("even sentence lengths")
+    elif metrics["var_ai"] <= 0.3:
+        findings.append("varied sentence lengths")
+
+    if metrics["len_ai"] >= 0.6:
+        findings.append("longer average words")
+    elif metrics["len_ai"] <= 0.3:
+        findings.append("shorter average words")
+
+    if not findings:
+        findings.append("mixed structural signals")
+
+    return "Stylometry found " + ", ".join(findings) + "."
 
 
 def groq_signal(text):
